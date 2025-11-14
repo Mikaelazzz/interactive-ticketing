@@ -18,12 +18,6 @@ export default function Home() {
                 <p className="text-sm text-gray-500"></p>
               </div>
             </div>
-            {/* <Link
-              href="/auth/login"
-              className="px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition"
-            >
-              Masuk
-            </Link> */}
           </div>
         </div>
       </header>
@@ -126,27 +120,6 @@ export default function Home() {
             </div>
           </Link>
 
-        </div>
-
-        {/* Info Section */}
-        <div className="mt-16 bg-white rounded-2xl shadow-lg p-8 max-w-4xl mx-auto border border-gray-100">
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-              <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 mb-2">Tentang Simulasi</h3>
-              <p className="text-gray-600 leading-relaxed">
-                Sistem ini mensimulasikan alur antrian rumah sakit dari pendaftaran hingga konsultasi. 
-                <span className="font-medium text-gray-900"> Patient</span> mendaftar dan mendapat nomor antrian, 
-                <span className="font-medium text-gray-900"> Staff</span> memverifikasi dan memanggil pasien, 
-                <span className="font-medium text-gray-900"> Doctor</span> melakukan konsultasi, dan 
-                <span className="font-medium text-gray-900"> Monitor</span> menampilkan informasi antrian secara real-time.
-              </p>
-            </div>
-          </div>
         </div>
       </main>
 
