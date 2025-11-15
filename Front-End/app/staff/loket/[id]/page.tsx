@@ -200,12 +200,7 @@ export default function LoketDetailPage() {
           <div className="text-right">
             <div className="flex items-center justify-end gap-2 mb-1">
               <h1 className="text-2xl font-bold text-white drop-shadow-lg">LOKET {loketId}</h1>
-              <div className={`w-3 h-3 rounded-full ${wsConnected ? 'bg-green-400' : 'bg-red-400'} shadow-lg`} 
-                   title={wsConnected ? 'Connected' : 'Disconnected'}></div>
             </div>
-            <p className="text-sm text-blue-100">
-              Manajemen Antrian {wsConnected ? '• Live Updates' : '• Reconnecting...'}
-            </p>
           </div>
         </div>
       </header>
