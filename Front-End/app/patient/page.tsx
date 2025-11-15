@@ -1,9 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const API_URL = 'http://localhost:8080/api';
+const WS_URL = 'ws://localhost:8080/ws';
 
 // Mapping dokter berdasarkan poli
 const doctorsBySpecialist: { [key: string]: string[] } = {
@@ -46,6 +47,9 @@ export default function PatientPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingQueue, setIsCheckingQueue] = useState(true);
   const [error, setError] = useState('');
+  const [currentStatus, setCurrentStatus] = useState('waiting'); // Track current status
+  
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Load data dari localStorage saat component mount
   useEffect(() => {
@@ -78,6 +82,7 @@ export default function PatientPage() {
                 setQueueNumber(existingPatient.queueNumber);
                 setLoketNumber(existingPatient.loketNumber);
                 setPatientId(existingPatient.id);
+                setCurrentStatus(existingPatient.status); // Set status dari backend
                 setIsSubmitted(true);
               } else {
                 // Antrian sudah selesai, hapus dari localStorage
@@ -119,6 +124,90 @@ export default function PatientPage() {
 
     checkExistingQueue();
   }, []);
+
+  // WebSocket untuk monitor status antrian
+  useEffect(() => {
+    if (!isSubmitted || !loketNumber || !patientId) return;
+
+    const connectWebSocket = () => {
+      try {
+        const ws = new WebSocket(`${WS_URL}/loket/${loketNumber}`);
+        
+        ws.onopen = () => {
+          console.log(`Patient WebSocket connected for loket ${loketNumber}`);
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'initial' || data.type === 'update') {
+              const patients = data.patients || [];
+              
+              // Cari patient dengan ID yang sama
+              const myPatient = patients.find((p: any) => p.id === patientId);
+              
+              if (myPatient) {
+                setCurrentStatus(myPatient.status);
+                
+                // Update queue number dan loket jika ada perubahan
+                setQueueNumber(myPatient.queueNumber);
+                setLoketNumber(myPatient.loketNumber);
+                
+                // Jika status completed, hapus localStorage dan reset
+                if (myPatient.status === 'completed') {
+                  localStorage.removeItem('patientQueue');
+                  localStorage.removeItem('patientFormData');
+                  
+                  // Delay untuk memberikan waktu user melihat status completed
+                  setTimeout(() => {
+                    setIsSubmitted(false);
+                    setFormData({
+                      fullName: '',
+                      specialist: '',
+                      doctor: '',
+                      complaint: '',
+                    });
+                    setAvailableDoctors([]);
+                    setQueueNumber('');
+                    setLoketNumber('');
+                    setPatientId('');
+                    setCurrentStatus('waiting');
+                  }, 5000); // 5 detik delay
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Error parsing WebSocket message:', err);
+          }
+        };
+        
+        ws.onerror = () => {
+          // Silent error
+        };
+        
+        ws.onclose = () => {
+          console.log('Patient WebSocket disconnected, reconnecting...');
+          // Reconnect after 3 seconds
+          setTimeout(connectWebSocket, 3000);
+        };
+        
+        wsRef.current = ws;
+      } catch (error) {
+        console.error('Failed to create WebSocket:', error);
+        setTimeout(connectWebSocket, 3000);
+      }
+    };
+
+    connectWebSocket();
+
+    // Cleanup
+    return () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
+      }
+    };
+  }, [isSubmitted, loketNumber, patientId]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -476,21 +565,60 @@ export default function PatientPage() {
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-gray-600">Status:</span>
-                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800">
-                      <span className="w-2 h-2 bg-yellow-500 rounded-full mr-2"></span>
-                      Menunggu
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+                      currentStatus === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
+                      currentStatus === 'called' ? 'bg-blue-100 text-blue-800' :
+                      'bg-green-100 text-green-800'
+                    }`}>
+                      <span className={`w-2 h-2 rounded-full mr-2 ${
+                        currentStatus === 'waiting' ? 'bg-yellow-500' :
+                        currentStatus === 'called' ? 'bg-blue-500 animate-pulse' :
+                        'bg-green-500'
+                      }`}></span>
+                      {currentStatus === 'waiting' ? 'Menunggu' :
+                       currentStatus === 'called' ? 'Dipanggil - Silakan ke Loket' :
+                       'Selesai'}
                     </span>
                   </div>
                 </div>
 
                 {/* Additional Info */}
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-8 text-left">
-                  <p className="text-sm font-medium text-blue-900 mb-2">Informasi Penting:</p>
-                  <ul className="text-sm text-blue-800 space-y-1">
-                    <li>• Data antrian Anda telah tersimpan, Anda dapat meninggalkan halaman ini</li>
-                    <li>• Harap datang ke loket saat nomor Anda dipanggil</li>
-                    <li>• Jika ingin membatalkan antrian, hubungi petugas di loket</li>
-                  </ul>
+                <div className={`border rounded-lg p-4 mb-8 text-left ${
+                  currentStatus === 'called' 
+                    ? 'bg-blue-100 border-blue-300 animate-pulse' 
+                    : currentStatus === 'completed'
+                    ? 'bg-green-50 border-green-200'
+                    : 'bg-blue-50 border-blue-200'
+                }`}>
+                  {currentStatus === 'called' ? (
+                    <>
+                      <p className="text-lg font-bold text-blue-900 mb-2 flex items-center">
+                        <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                        </svg>
+                        Nomor Anda Dipanggil!
+                      </p>
+                      <p className="text-sm text-blue-800">
+                        🎯 Silakan segera menuju ke <strong>Loket {loketNumber}</strong>
+                      </p>
+                    </>
+                  ) : currentStatus === 'completed' ? (
+                    <>
+                      <p className="text-lg font-bold text-green-900 mb-2">✅ Pemeriksaan Selesai</p>
+                      <p className="text-sm text-green-800">
+                        Terima kasih telah menggunakan layanan kami. Halaman akan reset dalam 5 detik...
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-blue-900 mb-2">Informasi Penting:</p>
+                      <ul className="text-sm text-blue-800 space-y-1">
+                        <li>• Data antrian Anda telah tersimpan, Anda dapat meninggalkan halaman ini</li>
+                        <li>• Harap datang ke loket saat nomor Anda dipanggil</li>
+                        <li>• Status akan berubah otomatis saat Anda dipanggil</li>
+                      </ul>
+                    </>
+                  )}
                 </div>
 
                 {/* Action Buttons */}
