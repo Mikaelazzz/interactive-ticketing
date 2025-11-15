@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 	"github.com/rs/cors"
 )
 
@@ -48,9 +49,69 @@ var (
 		"D": 0,
 	}
 	queueCountMu sync.Mutex
+	upgrader     = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Allow all origins for development
+		},
+	}
+	wsClients   = make(map[*websocket.Conn]string) // map connection to loket number
+	wsClientsMu sync.RWMutex
 )
 
 const dataFile = "patients.json"
+
+// Broadcast update to all WebSocket clients for specific loket
+func broadcastToLoket(loketNumber string) {
+	wsClientsMu.RLock()
+	defer wsClientsMu.RUnlock()
+
+	patientsMu.RLock()
+	loketPatients := []Patient{}
+	for _, p := range patients {
+		if p.LoketNumber == loketNumber {
+			loketPatients = append(loketPatients, p)
+		}
+	}
+	patientsMu.RUnlock()
+
+	message, _ := json.Marshal(map[string]interface{}{
+		"type":     "update",
+		"loket":    loketNumber,
+		"patients": loketPatients,
+	})
+
+	for client, loket := range wsClients {
+		if loket == loketNumber {
+			if err := client.WriteMessage(websocket.TextMessage, message); err != nil {
+				log.Printf("Error sending message to client: %v", err)
+				client.Close()
+				delete(wsClients, client)
+			}
+		}
+	}
+}
+
+// Broadcast recall to all WebSocket clients for specific loket
+func broadcastRecall(loketNumber string, patient Patient) {
+	wsClientsMu.RLock()
+	defer wsClientsMu.RUnlock()
+
+	message, _ := json.Marshal(map[string]interface{}{
+		"type":    "recall",
+		"loket":   loketNumber,
+		"patient": patient,
+	})
+
+	for client, loket := range wsClients {
+		if loket == loketNumber {
+			if err := client.WriteMessage(websocket.TextMessage, message); err != nil {
+				log.Printf("Error sending recall message to client: %v", err)
+				client.Close()
+				delete(wsClients, client)
+			}
+		}
+	}
+}
 
 // Data alamat Indonesia yang akurat
 var indonesianAddresses = []string{
@@ -293,6 +354,130 @@ func updatePatientStatus(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Patient not found", http.StatusNotFound)
 }
 
+// Handler: Recall patient (trigger TTS again without changing status)
+func recallPatient(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	id := params["id"]
+
+	patientsMu.RLock()
+	var patient Patient
+	found := false
+	for _, p := range patients {
+		if p.ID == id && p.Status == "called" {
+			patient = p
+			found = true
+			break
+		}
+	}
+	patientsMu.RUnlock()
+
+	if !found {
+		http.Error(w, "Patient not found or not in called status", http.StatusNotFound)
+		return
+	}
+
+	// Broadcast recall to WebSocket clients
+	go broadcastRecall(patient.LoketNumber, patient)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Recall triggered",
+		"patient": patient,
+	})
+}
+
+// Handler: Update entire patient object (for WebSocket updates)
+func updatePatient(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	id := params["id"]
+
+	var updatedPatient Patient
+	if err := json.NewDecoder(r.Body).Decode(&updatedPatient); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	patientsMu.Lock()
+	found := false
+	var loketNumber string
+	for i := range patients {
+		if patients[i].ID == id {
+			loketNumber = patients[i].LoketNumber
+			updatedPatient.ID = id
+			updatedPatient.CreatedAt = patients[i].CreatedAt
+			patients[i] = updatedPatient
+			found = true
+			break
+		}
+	}
+	patientsMu.Unlock()
+
+	if !found {
+		http.Error(w, "Patient not found", http.StatusNotFound)
+		return
+	}
+
+	if err := saveData(); err != nil {
+		log.Printf("Error saving data: %v", err)
+	}
+
+	// Broadcast update to WebSocket clients
+	go broadcastToLoket(loketNumber)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updatedPatient)
+}
+
+// Handler: WebSocket for loket real-time updates
+func handleLoketWebSocket(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	loketNumber := params["loket"]
+
+	// Upgrade HTTP connection to WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade connection: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// Register client
+	wsClientsMu.Lock()
+	wsClients[conn] = loketNumber
+	wsClientsMu.Unlock()
+
+	log.Printf("WebSocket client connected for loket %s", loketNumber)
+
+	// Send initial data
+	patientsMu.RLock()
+	loketPatients := []Patient{}
+	for _, p := range patients {
+		if p.LoketNumber == loketNumber {
+			loketPatients = append(loketPatients, p)
+		}
+	}
+	patientsMu.RUnlock()
+
+	initialMessage, _ := json.Marshal(map[string]interface{}{
+		"type":     "initial",
+		"loket":    loketNumber,
+		"patients": loketPatients,
+	})
+	conn.WriteMessage(websocket.TextMessage, initialMessage)
+
+	// Keep connection alive and listen for client messages
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("WebSocket client disconnected: %v", err)
+			wsClientsMu.Lock()
+			delete(wsClients, conn)
+			wsClientsMu.Unlock()
+			break
+		}
+	}
+}
+
 // Handler: Get queue statistics
 func getQueueStats(w http.ResponseWriter, r *http.Request) {
 	patientsMu.RLock()
@@ -397,12 +582,17 @@ func main() {
 	router.HandleFunc("/api/patients", getPatients).Methods("GET")
 	router.HandleFunc("/api/patients", createPatient).Methods("POST")
 	router.HandleFunc("/api/patients/{id}", getPatientByID).Methods("GET")
+	router.HandleFunc("/api/patients/{id}", updatePatient).Methods("PUT")
 	router.HandleFunc("/api/patients/check/{name}", checkActiveQueue).Methods("GET")
 	router.HandleFunc("/api/patients/{id}/status", updatePatientStatus).Methods("PUT")
+	router.HandleFunc("/api/patients/{id}/recall", recallPatient).Methods("POST")
 	router.HandleFunc("/api/patients/loket/{loket}", getPatientsByLoket).Methods("GET")
 	router.HandleFunc("/api/patients/loket/{loket}/next", getNextQueue).Methods("GET")
 	router.HandleFunc("/api/stats", getQueueStats).Methods("GET")
 	router.HandleFunc("/api/reset", resetData).Methods("POST")
+
+	// WebSocket route
+	router.HandleFunc("/ws/loket/{loket}", handleLoketWebSocket)
 
 	// CORS
 	c := cors.New(cors.Options{
